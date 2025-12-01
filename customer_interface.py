@@ -504,48 +504,64 @@ def handle_cash_payment():
         print(f"Lỗi khi tạo đơn tiền mặt: {e}")
         messagebox.showerror("Lỗi", f"Không thể gửi đơn hàng: {e}")
         show_checkout_screen()
+# --- SỬA LẠI HÀM start_payment ĐỂ DÙNG SEPAY/VIETQR ---
 
-def start_payment(amount, info, table): # <-- MODIFIED: Thêm 'table'
-    """
-    MODIFIED: Bắt đầu quá trình thanh toán (gửi kèm số bàn).
-    """
+def start_payment(amount, info, table):
     global current_orderId, root, qr_label
     
-    status_label.config(text="Đang xử lý, vui lòng chờ...", fg="blue")
+    status_label.config(text="Đang tạo mã VietQR...", fg="blue")
     root.update_idletasks() 
     
     try:
-        print(f"Yêu cầu tạo thanh toán cho {info} - {amount}VND - Bàn {table}")
-        # MODIFIED: Thêm &table={table} vào URL
+        # Gọi API mới của Server (không còn liên quan MoMo)
+        print(f"Yêu cầu tạo thanh toán: {amount}VND - Bàn {table}")
+        
+        # URL gọi API create-payment
         url = f"{HEROKU_APP_URL}/create-payment?amount={amount}&info={info}&table={table}"
         response = requests.get(url, timeout=10)
         
         if response.status_code != 200:
-            raise Exception(f"Server Heroku báo lỗi: {response.text}")
+            raise Exception(f"Server báo lỗi: {response.text}")
         
-        # ... (Phần còn lại của hàm tạo QR giữ nguyên) ...
         data = response.json()
-        pay_url = data.get('payUrl')
+        
+        # Server trả về { 'orderId': 'DH12345', 'payUrl': 'https://img.vietqr.io/...' }
         current_orderId = data.get('orderId')
-        if not pay_url or not current_orderId:
-            raise Exception("Phản hồi từ server không hợp lệ.")
-        qr_img = qrcode.make(pay_url)
-        img_byte_arr = io.BytesIO()
-        qr_img.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
-        img = Image.open(img_byte_arr)
-        img = img.resize((250, 250))
-        qr_photo = ImageTk.PhotoImage(img)
+        qr_image_url = data.get('payUrl')
+        
+        if not current_orderId or not qr_image_url:
+            raise Exception("Dữ liệu từ server không hợp lệ (thiếu ID hoặc Link ảnh).")
+
+        print(f"Đã nhận Order ID: {current_orderId}")
+        print(f"Link VietQR: {qr_image_url}")
+
+        # Tải ảnh QR từ link VietQR về
+        # Lưu ý: Cần thêm User-Agent để VietQR không chặn
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        qr_response = requests.get(qr_image_url, headers=headers, timeout=10)
+        
+        # Xử lý ảnh để hiển thị lên giao diện Tkinter
+        img_data = qr_response.content
+        pil_image = Image.open(io.BytesIO(img_data))
+        pil_image = pil_image.resize((300, 400), Image.LANCZOS) # Kích thước chuẩn cho frame
+        qr_photo = ImageTk.PhotoImage(pil_image)
+        
+        # Cập nhật giao diện
         qr_label.config(image=qr_photo)
-        qr_label.image = qr_photo
-        status_label.config(text=f"Quét mã để thanh toán cho {info}...")
-        print(f"Bắt đầu Polling cho Order ID: {current_orderId}")
+        qr_label.image = qr_photo # Giữ tham chiếu ảnh
+        
+        # Hiển thị hướng dẫn
+        msg_text = f"QUÉT MÃ ĐỂ THANH TOÁN\nNội dung CK: {current_orderId}"
+        status_label.config(text=msg_text, fg="red")
+        speak(f"Mời bạn quét mã QR. Hệ thống sẽ tự động xác nhận khi nhận được tiền.")
+        
+        # Bắt đầu vòng lặp kiểm tra trạng thái
         root.after(3000, poll_for_payment)
 
     except Exception as e:
-        print(f"Lỗi trong start_payment: {e}")
-        messagebox.showerror("Lỗi Mạng", f"Không thể tạo thanh toán: {e}")
-        reset_kiosk() # Nếu lỗi thì reset về menu
+        print(f"Lỗi tạo QR: {e}")
+        messagebox.showerror("Lỗi", f"Không thể tạo mã thanh toán: {e}")
+        reset_kiosk()
 
 def poll_for_payment():
     """
